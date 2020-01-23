@@ -1,5 +1,47 @@
 version: "3.3"
 services:
+  reverse-proxy:
+    image: traefik:v2.1
+    networks:
+      - web
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+      # - target: 8000
+      #   published: 8000
+      #   protocol: tcp
+      #   mode: host
+      # - target: 8080
+      #   published: 8080
+      #   protocol: tcp
+      #   mode: host
+    command:
+      --api.insecure=true
+      --providers.docker=true
+      --log=false
+      --accesslog=false
+      --accesslog.bufferingsize=10
+      --accesslog.fields.headers.defaultmode=keep
+      --accesslog.format=json
+      --global.checknewversion=true
+      --providers.docker.exposedbydefault=true
+      --entrypoints.web.address=:80
+      --entrypoints.websecure.address=:443
+      --certificatesresolvers.mytlschallenge.acme.tlschallenge=true
+      --certificatesresolvers.mytlschallenge.acme.email=acme@bannersnack.dev
+      --certificatesresolvers.mytlschallenge.acme.storage=/letsencrypt/acme.json
+      --tracing=false
+    volumes:
+      # So that Traefik can listen to the Docker events
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt/acme.json:/letsencrypt/acme.json
+
   subspace:
     image: strategiczone/subspace:latest
     container_name: ${SERVICE}
@@ -11,6 +53,7 @@ services:
     volumes:
       - /usr/bin/wg:/usr/bin/wg
       - ./data:/data
+      - ./entrypoint.sh:/usr/local/bin/entrypoint.sh
     environment:
       TZ: ${TZ}
       SMTP_FROM: ${SMTP_FROM}
@@ -27,7 +70,8 @@ services:
       SUBSPACE_LISTENPORT: ${WG_PORT}
       SUBSPACE_IPV4_POOL: ${SUBSPACE_IPV4_POOL}
       SUBSPACE_IPV6_POOL: ${SUBSPACE_IPV6_POOL}
-      SUBSPACE_IPV6_NAT_ENABLED: 1
+      SUBSPACE_IPV6_NAT_ENABLED: "0"
+      SUBSPACE_IPV6_NAT_ENABLED-: "0"
      #SUBSPACE_ROUTE: ${SUBSPACE_ROUTE}
     ports:
       - target: ${WG_PORT}
@@ -35,15 +79,22 @@ services:
         protocol: udp
         mode: host
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.${SERVICE}.rule=Host(`${DOMAIN_NAME}`)"
-      - "traefik.http.services.${SERVICE}.loadbalancer.server.port=${SERVICE_PORT}"
-      - "traefik.http.routers.${SERVICE}.tls.certresolver=le"
-      - "traefik.http.routers.${SERVICE}.entrypoints=web-secure"
-      - "traefik.http.middlewares.${SERVICE}_https.redirectscheme.scheme=https"
-      - "traefik.http.routers.${SERVICE}_redirect.rule=Host(`${DOMAIN_NAME}`)"
-      - "traefik.http.routers.${SERVICE}_redirect.entrypoints=web"
-      - "traefik.http.routers.${SERVICE}_redirect.middlewares=${SERVICE}_https"
+            #- "traefik.enable=true"
+            #- "traefik.http.routers.${SERVICE}.rule=Host(`${DOMAIN_NAME}`)"
+            #- "traefik.http.services.${SERVICE}.loadbalancer.server.port=${SERVICE_PORT}"
+            #- "traefik.http.routers.${SERVICE}.tls.certresolver=mytlschallenge"
+            #- "traefik.http.routers.${SERVICE}.entrypoints=web"
+            #- "traefik.http.middlewares.${SERVICE}_https.redirectscheme.scheme=https"
+            #- "traefik.http.routers.${SERVICE}_redirect.rule=Host(`${DOMAIN_NAME}`)"
+            #- "traefik.http.routers.${SERVICE}_redirect.entrypoints=web"
+            #- "traefik.http.routers.${SERVICE}_redirect.middlewares=${SERVICE}_https"
+      - traefik.enable=true
+      - traefik.http.routers.whoami_http.rule=Host(`vpn.bannersnack.dev`)
+      - traefik.http.routers.whoami_http.entrypoints=web
+      - traefik.http.routers.whoami.rule=Host(`vpn.bannersnack.dev`)
+      - traefik.http.routers.whoami.entrypoints=websecure
+      - traefik.http.routers.whoami.tls.certresolver=mytlschallenge
+      - traefik.http.services.whoami.loadbalancer.server.port=8080
     networks:
       - web
 
