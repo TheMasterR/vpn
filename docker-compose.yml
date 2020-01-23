@@ -44,6 +44,7 @@ services:
 
   subspace:
     image: strategiczone/subspace:latest
+    build: .
     container_name: ${SERVICE}
     restart: always
     sysctls:
