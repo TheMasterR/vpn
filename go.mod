@@ -10,7 +10,6 @@ require (
 	github.com/dustin/go-humanize v1.0.0
 	github.com/gorilla/securecookie v1.1.1
 	github.com/jonboulle/clockwork v0.1.0 // indirect
-	github.com/jteeuwen/go-bindata v3.0.7+incompatible // indirect
 	github.com/julienschmidt/httprouter v1.3.0
 	github.com/konsorten/go-windows-terminal-sequences v1.0.2 // indirect
 	github.com/kr/pretty v0.1.0 // indirect

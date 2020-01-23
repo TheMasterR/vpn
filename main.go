@@ -1,6 +1,6 @@
-//go:generate go-bindata -ignore=\.go templates/... email/... static/...
-
 package main
+
+//go:generate go-bindata -ignore=\.go templates/... email/... static/...
 
 import (
 	"context"
@@ -11,6 +11,8 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
+	"github.com/mattn/go-colorable"
+	"gopkg.in/natefinch/lumberjack.v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -24,9 +26,11 @@ import (
 	"github.com/crewjam/saml"
 	"github.com/crewjam/saml/samlsp"
 	"github.com/gorilla/securecookie"
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/acme/autocert"
 )
+
+const TimestampFormat = "2006-01-02 15:04:05"
 
 var (
 	// Flags
@@ -71,9 +75,6 @@ var (
 	// securetoken
 	securetoken *securecookie.SecureCookie
 
-	// logger
-	logger = log.New()
-
 	// config
 	config *Config
 
@@ -85,15 +86,50 @@ var (
 
 	// Error page HTML
 	errorPageHTML = `<html><head><title>Error</title></head><body text="orangered" bgcolor="black"><h1>An error has occurred</h1></body></html>`
+
+	wireguardPort int
+	// Client ipv4 configuration
+	clientIPv4Subnet     string
+	clientIPv4Gateway    string
+	clientIPv4UseGateway bool
+	clientIPv4DNS        string
+	clientIPv4UseDNS     bool
+
+	// Client ipv6 configuration
+	clientIPv6Enabled    bool
+	clientIPv6Subnet     string
+	clientIPv6Gateway    string
+	clientIPv6UseGateway bool
+	clientIPv6DNS        string
+	clientIPv6UseDNS     bool
+
+	clientKeepAlive int
 )
 
 func init() {
-	cli.StringVar(&datadir, "datadir", "./data", "data dir")
+	cli.StringVar(&datadir, "datadir", "/data", "data dir")
 	cli.StringVar(&backlink, "backlink", "", "backlink (optional)")
 	cli.StringVar(&httpHost, "http-host", "", "HTTP host")
 	cli.StringVar(&httpAddr, "http-addr", ":80", "HTTP listen address")
 	cli.BoolVar(&httpInsecure, "http-insecure", false, "enable sessions cookies for http (no https) not recommended")
 	cli.BoolVar(&letsencrypt, "letsencrypt", true, "enable TLS using Let's Encrypt on port 443")
+
+	cli.IntVar(&wireguardPort, "wireguard-port", 51820, "the wireguard port")
+	cli.StringVar(&clientIPv4Subnet, "client-ipv4-subnet", "10.99.97.0/24", "the wireguard client ipv4 subnet example 10.99.97.0/24")
+	cli.StringVar(&clientIPv4Gateway, "client-ipv4-gateway", "10.99.97.1", "the wireguard client ipv4 gateway")
+	cli.BoolVar(&clientIPv4UseGateway, "client-ipv4-use-gateway", true, "enables the wireguard client ipv4 gateway")
+	cli.StringVar(&clientIPv4DNS, "client-ipv4-dns", "10.99.97.1", "the wireguard client ipv4 dns")
+	cli.BoolVar(&clientIPv4UseDNS, "client-ipv4-use-dns", true, "enables the wireguard client ipv4 dns")
+
+	cli.BoolVar(&clientIPv6Enabled, "client-ipv6-enabled", false, "enables/disables ipv6 client support")
+	cli.StringVar(&clientIPv6Subnet, "client-ipv6-subnet", "fd00::10:97:0/112", "the wireguard client ipv6 subnet example 10.99.97.0/24")
+	cli.StringVar(&clientIPv6Gateway, "client-ipv6-gateway", "fd00::10:97:1", "the wireguard client ipv6 gateway")
+	cli.BoolVar(&clientIPv6UseGateway, "client-ipv6-use-gateway", true, "enables the wireguard client ipv6 gateway")
+	cli.StringVar(&clientIPv6DNS, "client-ipv6-dns", "fd00::10:97:1", "the wireguard client ipv6 dns")
+	cli.BoolVar(&clientIPv6UseDNS, "client-ipv6-use-dns", true, "enables the wireguard client ipv6 dns")
+
+	cli.IntVar(&clientKeepAlive, "client-keep-alive", 0, "enables keep alive")
+
 	cli.BoolVar(&showVersion, "version", false, "display version and exit")
 	cli.BoolVar(&showHelp, "help", false, "display help and exit")
 	cli.BoolVar(&debug, "debug", false, "debug mode")
@@ -102,42 +138,52 @@ func init() {
 func main() {
 	var err error
 
-	cli.Parse(os.Args[1:])
+	err = cli.Parse(os.Args[1:])
+	if err != nil {
+		logrus.Fatal(err)
+		return
+	}
+
 	usage := func(msg string) {
 		if msg != "" {
-			fmt.Fprintf(os.Stderr, "ERROR: %s\n", msg)
+			logrus.Errorf("ERROR: %s", msg)
 		}
-		fmt.Fprintf(os.Stderr, "Usage: %s --http-host subspace.example.com\n\n", os.Args[0])
+		logrus.Errorf("Usage: %s --http-host subspace.example.com\n", os.Args[0])
 		cli.PrintDefaults()
 	}
 
 	if showHelp {
 		usage("Help info")
 		os.Exit(0)
+		return
 	}
 
 	if showVersion {
 		fmt.Printf("Subspace %s\n", version)
 		os.Exit(0)
+		return
 	}
 
 	// http host
 	if httpHost == "" {
 		usage("--http-host flag is required")
 		os.Exit(1)
+		return
 	}
 
-	// debug logging
-	logger.Out = os.Stdout
-	if debug {
-		logger.SetLevel(log.DebugLevel)
-	}
-	logger.Debugf("debug logging is enabled")
+	initLogger()
+	logrus.Debugf("debug logging is enabled")
 
 	// http port
 	httpIP, httpPort, err := net.SplitHostPort(httpAddr)
 	if err != nil {
 		usage("invalid --http-addr: " + err.Error())
+		return
+	}
+
+	if clientKeepAlive > 0 && clientKeepAlive < 10 {
+		usage("invalid --client-keep-alive value, cannot be less then 10 seconds")
+		return
 	}
 
 	// Clean datadir path.
@@ -146,7 +192,8 @@ func main() {
 	// config
 	config, err = NewConfig("config.json")
 	if err != nil {
-		logger.Fatal(err)
+		logrus.Fatal(err)
+		return
 	}
 
 	// Secure token
@@ -155,7 +202,7 @@ func main() {
 	// Configure SAML if metadata is present.
 	if len(config.FindInfo().SAML.IDPMetadata) > 0 {
 		if err := configureSAML(); err != nil {
-			logger.Warnf("configuring SAML failed: %s", err)
+			logrus.Warnf("configuring SAML failed: %s", err)
 		}
 	}
 
@@ -207,23 +254,23 @@ func main() {
 
 	// Plain text web server for use behind a reverse proxy.
 	if !letsencrypt {
-		httpd := &http.Server{
+		httpServer := &http.Server{
 			Handler:        r,
 			Addr:           net.JoinHostPort(httpIP, httpPort),
 			WriteTimeout:   httpTimeout,
 			ReadTimeout:    httpTimeout,
 			MaxHeaderBytes: maxHeaderBytes,
 		}
-		hostport := net.JoinHostPort(httpHost, httpPort)
+		hostPort := net.JoinHostPort(httpHost, httpPort)
 		if httpPort == "80" {
-			hostport = httpHost
+			hostPort = httpHost
 		}
-		logger.Infof("Subspace version: %s %s", version, &url.URL{
+		logrus.Infof("Subspace version: %s %s", version, &url.URL{
 			Scheme: "http",
-			Host:   hostport,
+			Host:   hostPort,
 			Path:   httpPrefix,
 		})
-		logger.Fatal(httpd.ListenAndServe())
+		logrus.Fatal(httpServer.ListenAndServe())
 	}
 
 	// Let's Encrypt TLS mode
@@ -253,15 +300,15 @@ func main() {
 			http.Redirect(w, r, r.URL.String(), http.StatusFound)
 		})
 
-		httpd := &http.Server{
+		httpServer := &http.Server{
 			Handler:        certmanager.HTTPHandler(redir),
 			Addr:           net.JoinHostPort(httpIP, "80"),
 			WriteTimeout:   httpTimeout,
 			ReadTimeout:    httpTimeout,
 			MaxHeaderBytes: maxHeaderBytes,
 		}
-		if err := httpd.ListenAndServe(); err != nil {
-			logger.Fatalf("http server on port 80 failed: %s", err)
+		if err := httpServer.ListenAndServe(); err != nil {
+			logrus.Fatalf("http server on port 80 failed: %s", err)
 		}
 	}()
 
@@ -289,7 +336,7 @@ func main() {
 		httpAddr = net.JoinHostPort(httpIP, httpPort)
 	}
 
-	httpsd := &http.Server{
+	httpServer := &http.Server{
 		Handler:        r,
 		Addr:           httpAddr,
 		WriteTimeout:   httpTimeout,
@@ -300,21 +347,21 @@ func main() {
 	// Enable TCP keep alives on the TLS connection.
 	tcpListener, err := net.Listen("tcp", httpAddr)
 	if err != nil {
-		logger.Fatalf("listen failed: %s", err)
+		logrus.Fatalf("listen failed: %s", err)
 		return
 	}
 	tlsListener := tls.NewListener(tcpKeepAliveListener{tcpListener.(*net.TCPListener)}, &tlsConfig)
 
-	hostport := net.JoinHostPort(httpHost, httpPort)
+	hostPort := net.JoinHostPort(httpHost, httpPort)
 	if httpPort == "443" {
-		hostport = httpHost
+		hostPort = httpHost
 	}
-	logger.Infof("Subspace version: %s %s", version, &url.URL{
+	logrus.Infof("Subspace version: %s %s", version, &url.URL{
 		Scheme: "https",
-		Host:   hostport,
+		Host:   hostPort,
 		Path:   "/",
 	})
-	logger.Fatal(httpsd.Serve(tlsListener))
+	logrus.Fatal(httpServer.Serve(tlsListener))
 }
 
 type tcpKeepAliveListener struct {
@@ -326,8 +373,14 @@ func (l tcpKeepAliveListener) Accept() (c net.Conn, err error) {
 	if err != nil {
 		return
 	}
-	tc.SetKeepAlive(true)
-	tc.SetKeepAlivePeriod(10 * time.Minute)
+
+	if err := tc.SetKeepAlive(true); err != nil {
+		return nil, err
+	}
+
+	if err := tc.SetKeepAlivePeriod(10 * time.Minute); err != nil {
+		return nil, err
+	}
 	return tc, nil
 }
 
@@ -382,16 +435,16 @@ func configureSAML() error {
 		CookieName:        SessionCookieNameSSO,
 		CookieDomain:      httpHost, // TODO: this will break if using a custom domain.
 		CookieSecure:      !httpInsecure,
-		Logger:            logger,
+		Logger:            logrus.StandardLogger(),
 		AllowIDPInitiated: true,
 	})
 	if err != nil {
-		logger.Warnf("failed to configure SAML: %s", err)
+		logrus.Warnf("failed to configure SAML: %s", err)
 		samlSP = nil
 		return fmt.Errorf("failed to configure SAML: %s", err)
 	}
 	samlSP = newsp
-	logger.Infof("successfully configured SAML")
+	logrus.Infof("successfully configured SAML")
 	return nil
 }
 
@@ -401,4 +454,38 @@ func BestDomain() string {
 		return domain
 	}
 	return httpHost
+}
+
+func initLogger() {
+	var logLevel = logrus.InfoLevel
+	if debug {
+		logLevel = logrus.DebugLevel
+	}
+
+	logrus.SetLevel(logLevel)
+	logrus.SetOutput(colorable.NewColorableStdout())
+	logrus.SetFormatter(&logrus.TextFormatter{
+		ForceColors:     true,
+		FullTimestamp:   true,
+		TimestampFormat: TimestampFormat,
+	})
+
+	// Lumberjack hook
+	logrus.AddHook(NewLumberjackHook(
+		&LumberjackHookConfig{
+			Level: logLevel,
+			Formatter: &logrus.TextFormatter{
+				FullTimestamp:   true,
+				TimestampFormat: TimestampFormat,
+			},
+		},
+		&lumberjack.Logger{
+			Filename:   "/tmp/console.log",
+			MaxSize:    50, // megabytes
+			MaxBackups: 3,
+			MaxAge:     28, //days
+			Compress:   true,
+			LocalTime:  true,
+		},
+	))
 }

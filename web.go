@@ -1,10 +1,10 @@
-//go:generate go-bindata --pkg main static/... templates/... email/...
 package main
 
 import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"html/template"
 	"net"
 	"net/http"
@@ -17,8 +17,8 @@ import (
 
 	"golang.org/x/net/publicsuffix"
 
-	humanize "github.com/dustin/go-humanize"
-	httprouter "github.com/julienschmidt/httprouter"
+	"github.com/dustin/go-humanize"
+	"github.com/julienschmidt/httprouter"
 )
 
 var (
@@ -65,13 +65,14 @@ func init() {
 }
 
 func Error(w http.ResponseWriter, err error) {
-	logger.Error(err)
+	logrus.Error(err)
 
 	w.WriteHeader(http.StatusInternalServerError)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, errorPageHTML+"\n")
 }
 
+//go:generate go-bindata --pkg main static/... templates/... email/... shell/...
 func (w *Web) HTML() {
 	t := template.New(w.template).Funcs(template.FuncMap{
 		"hasprefix": strings.HasPrefix,
@@ -92,12 +93,12 @@ func (w *Web) HTML() {
 			}
 			redirect, err := url.Parse(samlSP.ServiceProvider.GetSSOBindingLocation(saml.HTTPRedirectBinding))
 			if err != nil {
-				logger.Warnf("SSO redirect invalid URL: %s", err)
+				logrus.Warnf("SSO redirect invalid URL: %s", err)
 				return "unknown"
 			}
 			domain, err := publicsuffix.EffectiveTLDPlusOne(redirect.Host)
 			if err != nil {
-				logger.Warnf("SSO redirect invalid URL domain: %s", err)
+				logrus.Warnf("SSO redirect invalid URL domain: %s", err)
 				return "unknown"
 			}
 			suffix, icann := publicsuffix.PublicSuffix(domain)
@@ -198,7 +199,7 @@ func WebHandler(h func(*Web), section string) httprouter.Handle {
 					return
 				}
 
-				logger.Infof("SAML: finding user with email %q", email)
+				logrus.Infof("SAML: finding user with email %q", email)
 				user, err := config.FindUserByEmail(email)
 				if err != nil && err != ErrUserNotFound {
 					Error(w, err)
@@ -206,7 +207,7 @@ func WebHandler(h func(*Web), section string) httprouter.Handle {
 				}
 
 				if user.ID == "" {
-					logger.Infof("SAML: creating user with email %q", email)
+					logrus.Infof("SAML: creating user with email %q", email)
 					user, err = config.AddUser(email)
 					if err != nil {
 						Error(w, err)
@@ -226,7 +227,7 @@ func WebHandler(h func(*Web), section string) httprouter.Handle {
 			}
 		}
 
-		logger.Warnf("auth: sign in required")
+		logrus.Warnf("auth: sign in required")
 		web.Redirect("/signin")
 	}
 }
@@ -241,7 +242,7 @@ func Log(h httprouter.Handle) httprouter.Handle {
 		xrealip := r.Header.Get("X-Real-IP")
 		rang := r.Header.Get("Range")
 
-		logger.Infof("%s %q %q %q %q %q %q %s %q %d ms", start, ip, xff, xrealip, ua, rang, r.Referer(), r.Method, r.RequestURI, int64(time.Since(start)/time.Millisecond))
+		logrus.Infof("%s %q %q %q %q %q %q %s %q %d ms", start, ip, xff, xrealip, ua, rang, r.Referer(), r.Method, r.RequestURI, int64(time.Since(start)/time.Millisecond))
 	}
 }
 
@@ -257,11 +258,11 @@ func serveAsset(w http.ResponseWriter, r *http.Request, filename string) {
 		http.NotFound(w, r)
 		return
 	}
-	// fi, err := AssetInfo(path)
-	// if err != nil {
-	// 	Error(w, err)
-	// 	return
-	// }
+	//fi, err := AssetInfo(path)
+	//if err != nil {
+	//	Error(w, err)
+	//	return
+	//}
 	http.ServeContent(w, r, path, StartTime, bytes.NewReader(b))
 }
 

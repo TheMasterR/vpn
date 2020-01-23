@@ -1,17 +1,19 @@
 package main
 
 import (
-	"os"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
+	"text/template"
 
 	"github.com/julienschmidt/httprouter"
 	"golang.org/x/crypto/bcrypt"
 
-	qrcode "github.com/skip2/go-qrcode"
+	"github.com/skip2/go-qrcode"
 )
 
 var (
@@ -22,30 +24,23 @@ var (
 	maxProfilesPerUser = 10
 )
 
-func getEnv(key, fallback string) string {
-	if value, ok := os.LookupEnv(key); ok {
-		return value
-	}
-	return fallback
-}
-
 func ssoHandler(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	if token := samlSP.GetAuthorizationToken(r); token != nil {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	logger.Debugf("SSO: require account handler")
+	logrus.Debugf("SSO: require account handler")
 	samlSP.RequireAccountHandler(w, r)
 	return
 }
 
 func samlHandler(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	if samlSP == nil {
-		logger.Warnf("SAML is not configured")
+		logrus.Warnf("SAML is not configured")
 		http.NotFound(w, r)
 		return
 	}
-	logger.Debugf("SSO: samlSP.ServeHTTP")
+	logrus.Debugf("SSO: samlSP.ServeHTTP")
 	samlSP.ServeHTTP(w, r)
 }
 
@@ -188,7 +183,7 @@ func forgotHandler(w *Web) {
 
 		go func() {
 			if err := mailer.Forgot(email, secret); err != nil {
-				logger.Error(err)
+				logrus.Error(err)
 			}
 		}()
 
@@ -315,7 +310,7 @@ func userDeleteHandler(w *Web) {
 
 	for _, profile := range config.ListProfilesByUser(user.ID) {
 		if err := deleteProfile(profile); err != nil {
-			logger.Errorf("delete profile failed: %s", err)
+			logrus.Errorf("delete profile failed: %s", err)
 			w.Redirect("/profile/delete?error=deleteprofile")
 			return
 		}
@@ -366,97 +361,66 @@ func profileAddHandler(w *Web) {
 		return
 	}
 
-	ipv4Pref := "10.99.97."
-	if pref := getEnv("SUBSPACE_IPV4_PREF", "nil"); pref != "nil" {
-		ipv4Pref = pref
-	}
-	ipv4Gw := "10.99.97.1"
-	if gw := getEnv("SUBSPACE_IPV4_GW", "nil"); gw != "nil" {
-		ipv4Gw = gw
-	}
-	ipv4Cidr := "24"
-	if cidr := getEnv("SUBSPACE_IPV4_CIDR", "nil"); cidr != "nil" {
-		ipv4Cidr = cidr
-	}
-
-	ipv6Pref := "fd00::10:97:"
-	if pref := getEnv("SUBSPACE_IPV6_PREF", "nil"); pref != "nil" {
-		ipv6Pref = pref
-	}
-	ipv6Gw := "fd00::10:97:1"
-	if gw := getEnv("SUBSPACE_IPV6_GW", "nil"); gw != "nil" {
-		ipv6Gw = gw
-	}
-	ipv6Cidr := "64"
-	if cidr := getEnv("SUBSPACE_IPV6_CIDR", "nil"); cidr != "nil" {
-		ipv6Cidr = cidr
-	}
-	listenport := "51820"
-	if port := getEnv("SUBSPACE_LISTENPORT", "nil"); port != "nil" {
-		listenport = port
-	}
-
-	profile, err := config.AddProfile(userID, name, platform, ipv4Pref, ipv4Cidr)
+	profile, err := config.AddProfile(userID, name, platform)
 	if err != nil {
-		logger.Warn(err)
+		logrus.Warn(err)
 		w.Redirect("/?error=addprofile")
 		return
 	}
 
-	script := `
-cd {{$.Datadir}}/wireguard
-wg_private_key="$(wg genkey)"
-wg_public_key="$(echo $wg_private_key | wg pubkey)"
+	_, ipNet, err := net.ParseCIDR(clientIPv4Subnet)
+	if err != nil {
+		logrus.Warn(err)
+		w.Redirect("/?error=addprofile")
+		return
+	}
 
-wg set wg0 peer ${wg_public_key} allowed-ips {{$.IPv4Pref}}{{$.Profile.Number}}/32,{{$.IPv6Pref}}{{$.Profile.Number}}/128
+	mask, _ := ipNet.Mask.Size()
 
-cat <<WGPEER >peers/{{$.Profile.ID}}.conf
-[Peer]
-PublicKey = ${wg_public_key}
-AllowedIPs = {{$.IPv4Pref}}{{$.Profile.Number}}/32,{{$.IPv6Pref}}{{$.Profile.Number}}/128
-WGPEER
+	subnetSplit := strings.Split(clientIPv4Subnet, ".")
+	newAddr := fmt.Sprintf("%s.%s.%s.%d", subnetSplit[0], subnetSplit[1], subnetSplit[2], profile.Number)
 
-cat <<WGCLIENT >clients/{{$.Profile.ID}}.conf
-[Interface]
-PrivateKey = ${wg_private_key}
-DNS = {{$.IPv4Gw}}, {{$.IPv6Gw}}
-Address = {{$.IPv4Pref}}{{$.Profile.Number}}/{{$.IPv4Cidr}},{{$.IPv6Pref}}{{$.Profile.Number}}/{{$.IPv6Cidr}}
-
-[Peer]
-PublicKey = $(cat server.public)
-Endpoint = {{$.Domain}}:{{$.Listenport}}
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 10
-WGCLIENT
-`
-	_, err = bash(script, struct {
-		Profile  Profile
-		Domain   string
-		Datadir string
-		IPv4Gw   string
-		IPv6Gw   string
-		IPv4Pref string
-		IPv6Pref string
-		IPv4Cidr string
-    IPv6Cidr string
-		Listenport string
+	_, err = bash("create_profile.shell", struct {
+		DataDir              string
+		Profile              Profile
+		Domain               string
+		WireguardPort        int
+		NewAddress           string
+		NewAddressMask       int
+		ClientIPv4Subnet     string
+		ClientIPv4DNS        string
+		ClientUseIPv4DNS     bool
+		ClientIPv4Gateway    string
+		ClientIPv4UseGateway bool
+		ClientIPv6Enabled    bool
+		ClientIPv6Subnet     string
+		ClientIPv6DNS        string
+		ClientIPv6UseDNS     bool
+		ClientIPv6Gateway    string
+		ClientIPv6UseGateway bool
+		ClientKeepAlive      int
 	}{
+		datadir,
 		profile,
 		httpHost,
-		datadir,
-		ipv4Gw,
-		ipv6Gw,
-		ipv4Pref,
-		ipv6Pref,
-		ipv4Cidr,
-    ipv6Cidr,
-		listenport,
+		wireguardPort,
+		newAddr,
+		mask,
+		clientIPv4Subnet,
+		clientIPv4DNS,
+		clientIPv4UseDNS,
+		clientIPv4Gateway,
+		clientIPv4UseGateway,
+		clientIPv6Enabled,
+		clientIPv6Subnet,
+		clientIPv6DNS,
+		clientIPv6UseDNS,
+		clientIPv6Gateway,
+		clientIPv6UseGateway,
+		clientKeepAlive,
 	})
 	if err != nil {
-		logger.Warn(err)
-		f, _ := os.Create("/tmp/error.txt")
-		errstr := fmt.Sprintln(err)
-		f.WriteString(errstr)
+		logrus.Warn(err)
 		w.Redirect("/?error=addprofile")
 		return
 	}
@@ -500,7 +464,7 @@ func profileDeleteHandler(w *Web) {
 		return
 	}
 	if err := deleteProfile(profile); err != nil {
-		logger.Errorf("delete profile failed: %s", err)
+		logrus.Errorf("delete profile failed: %s", err)
 		w.Redirect("/profile/delete?error=deleteprofile")
 		return
 	}
@@ -550,7 +514,7 @@ func settingsHandler(w *Web) {
 	// Configure SAML if metadata is present.
 	if len(samlMetadata) > 0 {
 		if err := configureSAML(); err != nil {
-			logger.Warnf("configuring SAML failed: %s", err)
+			logrus.Warnf("configuring SAML failed: %s", err)
 			w.Redirect("/settings?error=saml")
 		}
 	} else {
@@ -591,16 +555,8 @@ func helpHandler(w *Web) {
 // Helpers
 //
 func deleteProfile(profile Profile) error {
-	script := `
-# WireGuard
-cd {{$.Datadir}}/wireguard
-peerid=$(cat peers/{{$.Profile.ID}}.conf | perl -ne 'print $1 if /PublicKey\s*=\s*(.*)/')
-wg set wg0 peer $peerid remove
-rm peers/{{$.Profile.ID}}.conf
-rm clients/{{$.Profile.ID}}.conf
-`
-	output, err := bash(script, struct {
-		Datadir string
+	output, err := bash("delete_profile.shell", struct {
+		DataDir string
 		Profile Profile
 	}{
 		datadir,
@@ -610,4 +566,28 @@ rm clients/{{$.Profile.ID}}.conf
 		return fmt.Errorf("delete profile failed %s %s", err, output)
 	}
 	return config.DeleteProfile(profile.ID)
+}
+
+func shellTemplate(name string) (*template.Template, error) {
+	for _, filename := range AssetNames() {
+		if !strings.HasPrefix(filename, "shell/") {
+			continue
+		}
+		templateName := strings.TrimPrefix(filename, "shell/")
+		if name != templateName {
+			continue
+		}
+
+		templateData, err := Asset(filename)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load asset: %s - %w", filename, err)
+		}
+
+		tmpl := template.New(templateName)
+		if _, err := tmpl.Parse(string(templateData)); err != nil {
+			return nil, fmt.Errorf("failed to parse template: %s - template: %s %w", filename, string(templateData), err)
+		}
+		return tmpl, nil
+	}
+	return nil, fmt.Errorf("couldn't find template for %s", name)
 }

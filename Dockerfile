@@ -21,7 +21,7 @@ ENV DEBIAN_FRONTEND noninteractive
 RUN apt-get update \
     && apt-get install -y ca-certificates iproute2 iptables dnsmasq socat
 
-COPY --from=builder /app/app /usr/bin/subspace
+COPY --from=builder /app/app /app
 COPY --from=builder /app/entrypoint.sh /entrypoint.sh
 
 EXPOSE 80/tcp

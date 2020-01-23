@@ -39,7 +39,6 @@ type Profile struct {
 	UserID   string    `json:"user"`
 	Name     string    `json:"name"`
 	Platform string    `json:"platform"`
-	Ip       string    `json:"ip"`
 	Number   int       `json:"number"`
 	Created  time.Time `json:"created"`
 
@@ -74,7 +73,7 @@ type Info struct {
 	Mail struct {
 		From     string `json:"from"`
 		Server   string `json:"server"`
-		Port     int 		`json:"port"`
+		Port     int    `json:"port"`
 		Username string `json:"username"`
 		Password string `json:"password"`
 	} `json:"mail"`
@@ -103,12 +102,6 @@ func NewConfig(filename string) (*Config, error) {
 			HashKey:  RandomString(32),
 			BlockKey: RandomString(32),
 		}
-		c.Info.Mail.From = getEnv("SMTP_FROM", "nil")
-		c.Info.Mail.Server = getEnv("SMTP_SERVER", "nil")
-		c.Info.Mail.Port = 587
-	  c.Info.Mail.Username = getEnv("SMTP_USERNAME", "nil")
-	  c.Info.Mail.Password = getEnv("SMTP_PASSWORD", "nil")
-
 		return c, c.generateSAMLKeyPair()
 	}
 	if err != nil {
@@ -159,7 +152,7 @@ func (c *Config) generateSAMLKeyPair() error {
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			CommonName:   httpHost,
-			Organization: []string{"Wireguard"},
+			Organization: []string{"Subspace"},
 		},
 		BasicConstraintsValid: true,
 	}
@@ -211,24 +204,23 @@ func (c *Config) UpdateProfile(id string, fn func(*Profile) error) error {
 	return c.save()
 }
 
-func (c *Config) AddProfile(userID, name, platform, ipv4Pref, ipv4Cidr string) (Profile, error) {
+func (c *Config) AddProfile(userID, name, platform string) (Profile, error) {
 	c.Lock()
 	defer c.Unlock()
 
 	id := RandomString(16)
+
 	number := 2 // MUST start at 2
 	for _, p := range c.Profiles {
 		if p.Number >= number {
 			number = p.Number + 1
 		}
 	}
-  ip := ipv4Pref + fmt.Sprintf("%d", number) + "/" + ipv4Cidr
 	profile := Profile{
 		ID:       id,
 		UserID:   userID,
 		Name:     name,
 		Platform: platform,
-		Ip:       ip,
 		Number:   number,
 		Created:  time.Now(),
 	}
