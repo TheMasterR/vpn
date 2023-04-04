@@ -11,7 +11,7 @@ github.com/dgrijalva/jwt-go
 github.com/dustin/go-humanize
 # github.com/gorilla/securecookie v1.1.1
 github.com/gorilla/securecookie
-# github.com/jonboulle/clockwork v0.1.0
+# github.com/jonboulle/clockwork v0.2.2
 github.com/jonboulle/clockwork
 # github.com/julienschmidt/httprouter v1.3.0
 github.com/julienschmidt/httprouter
@@ -21,7 +21,7 @@ github.com/konsorten/go-windows-terminal-sequences
 github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.10
 github.com/mattn/go-isatty
-# github.com/russellhaering/goxmldsig v0.0.0-20180430223755-7acd5e4a6ef7
+# github.com/russellhaering/goxmldsig v1.1.1
 github.com/russellhaering/goxmldsig
 github.com/russellhaering/goxmldsig/etreeutils
 github.com/russellhaering/goxmldsig/types
